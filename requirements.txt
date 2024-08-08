@@ -1,7 +1,7 @@
-huggingface_hub[cli]
-wheel
 packaging
+wheel
 torch
+huggingface_hub[cli]
 transformers
 datasets
 accelerate
