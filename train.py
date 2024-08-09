@@ -26,10 +26,7 @@ wandb.login(key='190ea355e042b66c717ec2994563d1e8cf420446')
 # Load model
 
 
-def format_chat_template(row):
-    row["chosen"] = tokenizer.apply_chat_template(row["chosen"], tokenize=False)
-    row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
-    return row
+
 
 
 def main():
@@ -62,6 +59,10 @@ def main():
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(base_model)
 
+    def format_chat_template(row):
+        row["chosen"] = tokenizer.apply_chat_template(row["chosen"], tokenize=False)
+        row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
+        return row
 
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
