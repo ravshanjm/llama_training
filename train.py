@@ -1,12 +1,11 @@
 from datasets import load_dataset
-dataset = load_dataset("aisha-org/orpo_dataset_v1")
-
 import gc
 import os
 
 import torch
 import wandb
 from datasets import load_dataset
+from google.colab import userdata
 from peft import LoraConfig, PeftModel, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
@@ -24,46 +23,9 @@ wandb.login(key='190ea355e042b66c717ec2994563d1e8cf420446')
 
 
 
-attn_implementation = "flash_attention_2"
-torch_dtype = torch.bfloat16
-
-
-# Model
-base_model = "meta-llama/Meta-Llama-3-8B"
-new_model = "OrpoLlama-3-8B"
-
-# QLoRA config
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch_dtype,
-    bnb_4bit_use_double_quant=True,
-)
-
-# LoRA config
-peft_config = LoraConfig(
-    r=16,
-    lora_alpha=32,
-    lora_dropout=0.05,
-    bias="none",
-    task_type="CAUSAL_LM",
-    target_modules=['up_proj', 'down_proj', 'gate_proj', 'k_proj', 'q_proj', 'v_proj', 'o_proj']
-)
-
-# Load tokenizer
-tokenizer = AutoTokenizer.from_pretrained(base_model)
 
 # Load model
-model = AutoModelForCausalLM.from_pretrained(
-    base_model,
-    quantization_config=bnb_config,
-    device_map="auto",
-    attn_implementation=attn_implementation
-)
-model, tokenizer = setup_chat_format(model, tokenizer)
-model = prepare_model_for_kbit_training(model)
 
-dataset = dataset['train'].shuffle(seed=42).select(range(240000))
 
 def format_chat_template(row):
     row["chosen"] = tokenizer.apply_chat_template(row["chosen"], tokenize=False)
@@ -72,6 +34,49 @@ def format_chat_template(row):
 
 
 def main():
+    attn_implementation = "flash_attention_2"
+    torch_dtype = torch.bfloat16
+
+
+    # Model
+    base_model = "meta-llama/Meta-Llama-3-8B"
+    new_model = "OrpoLlama-3-8B"
+
+    # QLoRA config
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch_dtype,
+        bnb_4bit_use_double_quant=True,
+    )
+
+    # LoRA config
+    peft_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=['up_proj', 'down_proj', 'gate_proj', 'k_proj', 'q_proj', 'v_proj', 'o_proj']
+    )
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
+
+
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        quantization_config=bnb_config,
+        device_map="auto",
+        attn_implementation=attn_implementation
+    )
+    model, tokenizer = setup_chat_format(model, tokenizer)
+    model = prepare_model_for_kbit_training(model)
+    dataset = load_dataset("aisha-org/orpo_dataset_v1")
+
+    dataset = dataset['train'].shuffle(seed=42).select(range(240000))
+
+
     dataset = dataset.map(
         format_chat_template,
         num_proc= os.cpu_count(),
