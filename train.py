@@ -7,7 +7,6 @@ import os
 import torch
 import wandb
 from datasets import load_dataset
-from google.colab import userdata
 from peft import LoraConfig, PeftModel, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
