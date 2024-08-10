@@ -125,28 +125,33 @@ def main():
         deepspeed=ds_config,
     )
 
-    # Initialize the model with DeepSpeed
-    with deepspeed.zero.Init(config_dict_or_path=ds_config):
-        # Load the model configuration
-        config = AutoConfig.from_pretrained(base_model)
-        config.use_cache = False  # Set use_cache in the config
-        
-        # Create the model with pre-trained weights
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            config=config,
-            quantization_config=bnb_config,
-            torch_dtype=torch_dtype,
-            attn_implementation=attn_implementation,
-        )
-        
-        # Prepare the model for k-bit training
-        model = prepare_model_for_kbit_training(model)
-        
-        # Apply LoRA
-        model = get_peft_model(model, peft_config)
+    # Load the model configuration
+    config = AutoConfig.from_pretrained(base_model)
+    config.use_cache = False  # Set use_cache in the config
+
+    # Create the model with pre-trained weights
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        config=config,
+        quantization_config=bnb_config,
+        torch_dtype=torch_dtype,
+        attn_implementation=attn_implementation,
+    )
+
+    # Prepare the model for k-bit training
+    model = prepare_model_for_kbit_training(model)
+
+    # Apply LoRA
+    model = get_peft_model(model, peft_config)
 
     model, tokenizer = setup_chat_format(model, tokenizer)
+
+    # Initialize DeepSpeed
+    model, _, _, _ = deepspeed.initialize(
+        model=model,
+        config=ds_config,
+        model_parameters=model.parameters(),
+    )
 
     # Load and prepare dataset
     dataset = load_dataset("aisha-org/orpo_dataset_v1")
