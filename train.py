@@ -130,25 +130,21 @@ def main():
         # Load the model configuration
         config = AutoConfig.from_pretrained(base_model)
         
-        # Create the model with random weights
-        model = AutoModelForCausalLM.from_config(config)
+        # Create the model with pre-trained weights
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            config=config,
+            quantization_config=bnb_config,
+            torch_dtype=torch_dtype,
+            attn_implementation=attn_implementation,
+            use_cache=False,
+        )
         
         # Prepare the model for k-bit training
         model = prepare_model_for_kbit_training(model)
         
         # Apply LoRA
         model = get_peft_model(model, peft_config)
-
-    # Load the pre-trained weights
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        config=config,
-        quantization_config=bnb_config,
-        torch_dtype=torch_dtype,
-        attn_implementation=attn_implementation,
-        use_cache=False,
-        device_map={"": torch.cuda.current_device()},
-    )
 
     model, tokenizer = setup_chat_format(model, tokenizer)
 
