@@ -48,22 +48,6 @@ def main():
         row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
         return row
 
-    # Training arguments
-    training_args = TrainingArguments(
-        output_dir="./results",
-        learning_rate=9e-6,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        gradient_accumulation_steps=4,
-        num_train_epochs=1,
-        evaluation_strategy="steps",
-        eval_steps=0.2,
-        logging_steps=1,
-        warmup_steps=10,
-        report_to="wandb",
-        deepspeed="ds_config.json",  # We'll create this file
-    )
-
     # DeepSpeed configuration
     ds_config = {
         "fp16": {
@@ -119,13 +103,24 @@ def main():
         "wall_clock_breakdown": False
     }
 
-    # Save DeepSpeed config to a file
-    import json
-    with open('ds_config.json', 'w') as f:
-        json.dump(ds_config, f)
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir="./results",
+        learning_rate=9e-6,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
+        gradient_accumulation_steps=4,
+        num_train_epochs=1,
+        evaluation_strategy="steps",
+        eval_steps=0.2,
+        logging_steps=1,
+        warmup_steps=10,
+        report_to="wandb",
+        deepspeed=ds_config,  # Directly pass the dictionary
+    )
 
     # Initialize the model with DeepSpeed
-    with deepspeed.zero.Init(config_dict_or_path='ds_config.json'):
+    with deepspeed.zero.Init(config_dict_or_path=ds_config):
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
             quantization_config=bnb_config,
