@@ -62,8 +62,8 @@ def main():
         return row
 
     # FSDP settings
-    def create_fsdp_policy():
-        return size_based_auto_wrap_policy(min_num_params=1e8)
+    def create_fsdp_policy(module, recurse, nonwrapped_numel):
+        return size_based_auto_wrap_policy(min_num_params=1e8)(module, recurse, nonwrapped_numel)
 
     fsdp_config = dict(
         sharding_strategy=ShardingStrategy.FULL_SHARD,
@@ -138,3 +138,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
