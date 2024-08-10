@@ -1,5 +1,6 @@
 import os
 import torch
+from torch.optim import AdamW
 import wandb
 from datasets import load_dataset
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
@@ -27,6 +28,7 @@ def main():
     per_device_train_batch_size = 2
     gradient_accumulation_steps = 4
     num_gpus = int(os.environ.get("WORLD_SIZE", 1))
+    learning_rate = 9e-6
 
     # QLoRA config
     bnb_config = BitsAndBytesConfig(
@@ -67,18 +69,18 @@ def main():
         "optimizer": {
             "type": "AdamW",
             "params": {
-                "lr": "auto",
-                "betas": "auto",
-                "eps": "auto",
-                "weight_decay": "auto"
+                "lr": learning_rate,
+                "betas": [0.9, 0.999],
+                "eps": 1e-8,
+                "weight_decay": 0.01
             }
         },
         "scheduler": {
             "type": "WarmupLR",
             "params": {
-                "warmup_min_lr": "auto",
-                "warmup_max_lr": "auto",
-                "warmup_num_steps": "auto"
+                "warmup_min_lr": 0,
+                "warmup_max_lr": learning_rate,
+                "warmup_num_steps": 100
             }
         },
         "zero_optimization": {
@@ -102,7 +104,7 @@ def main():
             "stage3_gather_16bit_weights_on_model_save": True
         },
         "gradient_accumulation_steps": gradient_accumulation_steps,
-        "gradient_clipping": "auto",
+        "gradient_clipping": 1.0,
         "steps_per_print": 2000,
         "train_batch_size": per_device_train_batch_size * gradient_accumulation_steps * num_gpus,
         "train_micro_batch_size_per_gpu": per_device_train_batch_size,
@@ -112,7 +114,7 @@ def main():
     # Training arguments
     training_args = TrainingArguments(
         output_dir="./results",
-        learning_rate=9e-6,
+        learning_rate=learning_rate,
         per_device_train_batch_size=per_device_train_batch_size,
         per_device_eval_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -147,10 +149,9 @@ def main():
     model, tokenizer = setup_chat_format(model, tokenizer)
 
     # Initialize DeepSpeed
-    model, _, _, _ = deepspeed.initialize(
+    model_engine, optimizer, _, _ = deepspeed.initialize(
         model=model,
         config=ds_config,
-        model_parameters=model.parameters(),
     )
 
     # Load and prepare dataset
@@ -164,7 +165,7 @@ def main():
 
     # Create ORPOTrainer
     trainer = ORPOTrainer(
-        model=model,
+        model=model_engine,
         args=training_args,
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
