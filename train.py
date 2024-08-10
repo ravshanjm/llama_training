@@ -22,6 +22,11 @@ def main():
     base_model = "meta-llama/Meta-Llama-3-8B"
     new_model = "OrpoLlama-3-8B"
 
+    # Training hyperparameters
+    per_device_train_batch_size = 2
+    gradient_accumulation_steps = 4
+    num_gpus = int(os.environ.get("WORLD_SIZE", 1))
+
     # QLoRA config
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -95,11 +100,11 @@ def main():
             "stage3_max_reuse_distance": 1e9,
             "stage3_gather_16bit_weights_on_model_save": True
         },
-        "gradient_accumulation_steps": "auto",
+        "gradient_accumulation_steps": gradient_accumulation_steps,
         "gradient_clipping": "auto",
         "steps_per_print": 2000,
-        "train_batch_size": "auto",
-        "train_micro_batch_size_per_gpu": "auto",
+        "train_batch_size": per_device_train_batch_size * gradient_accumulation_steps * num_gpus,
+        "train_micro_batch_size_per_gpu": per_device_train_batch_size,
         "wall_clock_breakdown": False
     }
 
@@ -107,16 +112,16 @@ def main():
     training_args = TrainingArguments(
         output_dir="./results",
         learning_rate=9e-6,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=per_device_train_batch_size,
+        per_device_eval_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         num_train_epochs=1,
         evaluation_strategy="steps",
         eval_steps=0.2,
         logging_steps=1,
         warmup_steps=10,
         report_to="wandb",
-        deepspeed=ds_config,  # Directly pass the dictionary
+        deepspeed=ds_config,
     )
 
     # Initialize the model with DeepSpeed
