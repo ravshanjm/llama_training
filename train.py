@@ -1,34 +1,39 @@
 import os
+import gc
 import torch
-from torch.optim import AdamW
 import wandb
 from datasets import load_dataset
-from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
+from peft import LoraConfig, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
-    AutoConfig,
 )
-from trl import ORPOTrainer, setup_chat_format
-import deepspeed
+from trl import ORPOConfig, ORPOTrainer, setup_chat_format
+from accelerate import Accelerator
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    MixedPrecision,
+    BackwardPrefetch,
+    ShardingStrategy,
+    CPUOffload,
+)
+from torch.distributed.fsdp.wrap import (
+    size_based_auto_wrap_policy,
+    enable_wrap,
+    wrap,
+)
 
 wandb.login(key='190ea355e042b66c717ec2994563d1e8cf420446')
 
 def main():
+    accelerator = Accelerator()
     attn_implementation = "flash_attention_2"
     torch_dtype = torch.bfloat16
 
     # Model
     base_model = "meta-llama/Meta-Llama-3-8B"
     new_model = "OrpoLlama-3-8B"
-
-    # Training hyperparameters
-    per_device_train_batch_size = 2
-    gradient_accumulation_steps = 4
-    num_gpus = int(os.environ.get("WORLD_SIZE", 1))
-    learning_rate = 9e-6
 
     # QLoRA config
     bnb_config = BitsAndBytesConfig(
@@ -56,125 +61,77 @@ def main():
         row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
         return row
 
-    # DeepSpeed configuration
-    ds_config = {
-        "fp16": {
-            "enabled": "auto",
-            "loss_scale": 0,
-            "loss_scale_window": 1000,
-            "initial_scale_power": 16,
-            "hysteresis": 2,
-            "min_loss_scale": 1
-        },
-        "optimizer": {
-            "type": "AdamW",
-            "params": {
-                "lr": learning_rate,
-                "betas": [0.9, 0.999],
-                "eps": 1e-8,
-                "weight_decay": 0.01
-            }
-        },
-        "scheduler": {
-            "type": "WarmupLR",
-            "params": {
-                "warmup_min_lr": 0,
-                "warmup_max_lr": learning_rate,
-                "warmup_num_steps": 100
-            }
-        },
-        "zero_optimization": {
-            "stage": 3,
-            "offload_optimizer": {
-                "device": "cpu",
-                "pin_memory": True
-            },
-            "offload_param": {
-                "device": "cpu",
-                "pin_memory": True
-            },
-            "overlap_comm": True,
-            "contiguous_gradients": True,
-            "sub_group_size": 1e9,
-            "reduce_bucket_size": "auto",
-            "stage3_prefetch_bucket_size": "auto",
-            "stage3_param_persistence_threshold": "auto",
-            "stage3_max_live_parameters": 1e9,
-            "stage3_max_reuse_distance": 1e9,
-            "stage3_gather_16bit_weights_on_model_save": True
-        },
-        "gradient_accumulation_steps": gradient_accumulation_steps,
-        "gradient_clipping": 1.0,
-        "steps_per_print": 2000,
-        "train_batch_size": per_device_train_batch_size * gradient_accumulation_steps * num_gpus,
-        "train_micro_batch_size_per_gpu": per_device_train_batch_size,
-        "wall_clock_breakdown": False
-    }
+    # FSDP settings
+    fsdp_policy = size_based_auto_wrap_policy(min_num_params=1e8)
+    fsdp_config = dict(
+        sharding_strategy=ShardingStrategy.FULL_SHARD,
+        mixed_precision=MixedPrecision(
+            param_dtype=torch.float16,
+            reduce_dtype=torch.float16,
+            buffer_dtype=torch.float16,
+        ),
+        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+        cpu_offload=CPUOffload(offload_params=True),
+    )
 
-    # Training arguments
-    training_args = TrainingArguments(
-        output_dir="./results",
-        learning_rate=learning_rate,
-        per_device_train_batch_size=per_device_train_batch_size,
-        per_device_eval_batch_size=per_device_train_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
+    with accelerator.main_process_first():
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            quantization_config=bnb_config,
+            device_map="auto",
+            attn_implementation=attn_implementation
+        )
+        model, tokenizer = setup_chat_format(model, tokenizer)
+        model = prepare_model_for_kbit_training(model)
+
+    # Wrap the model with FSDP
+    model = FSDP(model, **fsdp_config)
+
+    dataset = load_dataset("aisha-org/orpo_dataset_v1")
+    dataset = dataset['train'].shuffle(seed=42).select(range(200))
+
+    with accelerator.main_process_first():
+        dataset = dataset.map(
+            format_chat_template,
+            num_proc=os.cpu_count(),
+        )
+        dataset = dataset.train_test_split(test_size=0.02)
+
+    orpo_args = ORPOConfig(
+        learning_rate=9e-6,
+        beta=0.1,
+        lr_scheduler_type="linear",
+        max_length=1024,
+        max_prompt_length=1024,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
+        gradient_accumulation_steps=4,
+        optim="paged_adamw_8bit",
         num_train_epochs=1,
         evaluation_strategy="steps",
         eval_steps=0.2,
         logging_steps=1,
         warmup_steps=10,
         report_to="wandb",
-        deepspeed=ds_config,
+        output_dir="./results",
+        fsdp=fsdp_config,
+        fsdp_transformer_layer_cls_to_wrap="LlamaDecoderLayer",
     )
 
-    # Load the model configuration
-    config = AutoConfig.from_pretrained(base_model)
-    config.use_cache = False  # Set use_cache in the config
-
-    # Create the model with pre-trained weights
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        config=config,
-        quantization_config=bnb_config,
-        torch_dtype=torch_dtype,
-        attn_implementation=attn_implementation,
-    )
-
-    # Prepare the model for k-bit training
-    model = prepare_model_for_kbit_training(model)
-
-    # Apply LoRA
-    model = get_peft_model(model, peft_config)
-
-    model, tokenizer = setup_chat_format(model, tokenizer)
-
-    # Initialize DeepSpeed
-    model_engine, optimizer, _, _ = deepspeed.initialize(
-        model=model,
-        config=ds_config,
-    )
-
-    # Load and prepare dataset
-    dataset = load_dataset("aisha-org/orpo_dataset_v1")
-    dataset = dataset['train'].shuffle(seed=42).select(range(200))
-    dataset = dataset.map(
-        format_chat_template,
-        num_proc=os.cpu_count(),
-    )
-    dataset = dataset.train_test_split(test_size=0.02)
-
-    # Create ORPOTrainer
     trainer = ORPOTrainer(
-        model=model_engine,
-        args=training_args,
+        model=model,
+        args=orpo_args,
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
+        peft_config=peft_config,
         tokenizer=tokenizer,
     )
 
-    # Train and save
     trainer.train()
-    trainer.save_model(new_model)
+    
+    # Save the model on the main process
+    if accelerator.is_main_process:
+        trainer.save_model(new_model)
 
 if __name__ == "__main__":
     main()
