@@ -62,7 +62,9 @@ def main():
         return row
 
     # FSDP settings
-    fsdp_policy = size_based_auto_wrap_policy(min_num_params=1e8)
+    def create_fsdp_policy():
+        return size_based_auto_wrap_policy(min_num_params=1e8)
+
     fsdp_config = dict(
         sharding_strategy=ShardingStrategy.FULL_SHARD,
         mixed_precision=MixedPrecision(
@@ -72,6 +74,7 @@ def main():
         ),
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
         cpu_offload=CPUOffload(offload_params=True),
+        auto_wrap_policy=create_fsdp_policy,
     )
 
     with accelerator.main_process_first():
