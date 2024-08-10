@@ -129,6 +129,7 @@ def main():
     with deepspeed.zero.Init(config_dict_or_path=ds_config):
         # Load the model configuration
         config = AutoConfig.from_pretrained(base_model)
+        config.use_cache = False  # Set use_cache in the config
         
         # Create the model with pre-trained weights
         model = AutoModelForCausalLM.from_pretrained(
@@ -137,7 +138,6 @@ def main():
             quantization_config=bnb_config,
             torch_dtype=torch_dtype,
             attn_implementation=attn_implementation,
-            use_cache=False,
         )
         
         # Prepare the model for k-bit training
