@@ -9,7 +9,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
 )
-from trl import ORPOConfig, ORPOTrainer, setup_chat_format
+from trl import ORPOTrainer, setup_chat_format
 import deepspeed
 
 wandb.login(key='190ea355e042b66c717ec2994563d1e8cf420446')
@@ -48,8 +48,24 @@ def main():
         row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
         return row
 
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir="./results",
+        learning_rate=9e-6,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
+        gradient_accumulation_steps=4,
+        num_train_epochs=1,
+        evaluation_strategy="steps",
+        eval_steps=0.2,
+        logging_steps=1,
+        warmup_steps=10,
+        report_to="wandb",
+        deepspeed="ds_config.json",  # We'll create this file
+    )
+
     # DeepSpeed configuration
-    deepspeed_config = {
+    ds_config = {
         "fp16": {
             "enabled": "auto",
             "loss_scale": 0,
@@ -93,7 +109,7 @@ def main():
             "stage3_param_persistence_threshold": "auto",
             "stage3_max_live_parameters": 1e9,
             "stage3_max_reuse_distance": 1e9,
-            "stage3_gather_fp16_weights_on_model_save": True
+            "stage3_gather_16bit_weights_on_model_save": True
         },
         "gradient_accumulation_steps": "auto",
         "gradient_clipping": "auto",
@@ -103,24 +119,13 @@ def main():
         "wall_clock_breakdown": False
     }
 
-    # Training arguments
-    training_args = TrainingArguments(
-        output_dir="./results",
-        learning_rate=9e-6,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        gradient_accumulation_steps=4,
-        num_train_epochs=1,
-        evaluation_strategy="steps",
-        eval_steps=0.2,
-        logging_steps=1,
-        warmup_steps=10,
-        report_to="wandb",
-        deepspeed=deepspeed_config,
-    )
+    # Save DeepSpeed config to a file
+    import json
+    with open('ds_config.json', 'w') as f:
+        json.dump(ds_config, f)
 
     # Initialize the model with DeepSpeed
-    with deepspeed.zero.Init(config_dict_or_path=deepspeed_config):
+    with deepspeed.zero.Init(config_dict_or_path='ds_config.json'):
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
             quantization_config=bnb_config,
