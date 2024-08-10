@@ -2,13 +2,15 @@ import os
 import torch
 import wandb
 from datasets import load_dataset
-from peft import LoraConfig, prepare_model_for_kbit_training
+from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    TrainingArguments,
 )
 from trl import ORPOConfig, ORPOTrainer, setup_chat_format
+import deepspeed
 
 wandb.login(key='190ea355e042b66c717ec2994563d1e8cf420446')
 
@@ -45,25 +47,6 @@ def main():
         row["chosen"] = tokenizer.apply_chat_template(row["chosen"], tokenize=False)
         row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
         return row
-
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        quantization_config=bnb_config,
-        device_map="auto",
-        attn_implementation=attn_implementation
-    )
-    model, tokenizer = setup_chat_format(model, tokenizer)
-    model = prepare_model_for_kbit_training(model)
-    dataset = load_dataset("aisha-org/orpo_dataset_v1")
-
-    dataset = dataset['train'].shuffle(seed=42).select(range(200))
-
-    dataset = dataset.map(
-        format_chat_template,
-        num_proc=os.cpu_count(),
-    )
-
-    dataset = dataset.train_test_split(test_size=0.02)
 
     # DeepSpeed configuration
     deepspeed_config = {
@@ -120,34 +103,53 @@ def main():
         "wall_clock_breakdown": False
     }
 
-    orpo_args = ORPOConfig(
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir="./results",
         learning_rate=9e-6,
-        beta=0.1,
-        lr_scheduler_type="linear",
-        max_length=1024,
-        max_prompt_length=1024,
         per_device_train_batch_size=2,
         per_device_eval_batch_size=2,
         gradient_accumulation_steps=4,
-        optim="paged_adamw_8bit",
         num_train_epochs=1,
         evaluation_strategy="steps",
         eval_steps=0.2,
         logging_steps=1,
         warmup_steps=10,
         report_to="wandb",
-        output_dir="./results",
-        deepspeed=deepspeed_config,  # Add DeepSpeed configuration
+        deepspeed=deepspeed_config,
     )
 
+    # Initialize the model with DeepSpeed
+    with deepspeed.zero.Init(config_dict_or_path=deepspeed_config):
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            quantization_config=bnb_config,
+            device_map="auto",
+            attn_implementation=attn_implementation
+        )
+        model, tokenizer = setup_chat_format(model, tokenizer)
+        model = prepare_model_for_kbit_training(model)
+        model = get_peft_model(model, peft_config)
+
+    # Load and prepare dataset
+    dataset = load_dataset("aisha-org/orpo_dataset_v1")
+    dataset = dataset['train'].shuffle(seed=42).select(range(200))
+    dataset = dataset.map(
+        format_chat_template,
+        num_proc=os.cpu_count(),
+    )
+    dataset = dataset.train_test_split(test_size=0.02)
+
+    # Create ORPOTrainer
     trainer = ORPOTrainer(
         model=model,
-        args=orpo_args,
+        args=training_args,
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
-        peft_config=peft_config,
         tokenizer=tokenizer,
     )
+
+    # Train and save
     trainer.train()
     trainer.save_model(new_model)
 
