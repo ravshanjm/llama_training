@@ -1,38 +1,20 @@
-from datasets import load_dataset
-import gc
 import os
-import deepspeed
 import torch
 import wandb
 from datasets import load_dataset
-from peft import LoraConfig, PeftModel, prepare_model_for_kbit_training
+from peft import LoraConfig, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
-    pipeline,
 )
 from trl import ORPOConfig, ORPOTrainer, setup_chat_format
-from accelerate import Accelerator
-
-
 
 wandb.login(key='190ea355e042b66c717ec2994563d1e8cf420446')
-
-
-
-
-# Load model
-
-
-
-
 
 def main():
     attn_implementation = "flash_attention_2"
     torch_dtype = torch.bfloat16
-
 
     # Model
     base_model = "meta-llama/Meta-Llama-3-8B"
@@ -76,15 +58,67 @@ def main():
 
     dataset = dataset['train'].shuffle(seed=42).select(range(200))
 
-
     dataset = dataset.map(
         format_chat_template,
-        num_proc= os.cpu_count(),
+        num_proc=os.cpu_count(),
     )
 
     dataset = dataset.train_test_split(test_size=0.02)
 
-
+    # DeepSpeed configuration
+    deepspeed_config = {
+        "fp16": {
+            "enabled": "auto",
+            "loss_scale": 0,
+            "loss_scale_window": 1000,
+            "initial_scale_power": 16,
+            "hysteresis": 2,
+            "min_loss_scale": 1
+        },
+        "optimizer": {
+            "type": "AdamW",
+            "params": {
+                "lr": "auto",
+                "betas": "auto",
+                "eps": "auto",
+                "weight_decay": "auto"
+            }
+        },
+        "scheduler": {
+            "type": "WarmupLR",
+            "params": {
+                "warmup_min_lr": "auto",
+                "warmup_max_lr": "auto",
+                "warmup_num_steps": "auto"
+            }
+        },
+        "zero_optimization": {
+            "stage": 3,
+            "offload_optimizer": {
+                "device": "cpu",
+                "pin_memory": True
+            },
+            "offload_param": {
+                "device": "cpu",
+                "pin_memory": True
+            },
+            "overlap_comm": True,
+            "contiguous_gradients": True,
+            "sub_group_size": 1e9,
+            "reduce_bucket_size": "auto",
+            "stage3_prefetch_bucket_size": "auto",
+            "stage3_param_persistence_threshold": "auto",
+            "stage3_max_live_parameters": 1e9,
+            "stage3_max_reuse_distance": 1e9,
+            "stage3_gather_fp16_weights_on_model_save": True
+        },
+        "gradient_accumulation_steps": "auto",
+        "gradient_clipping": "auto",
+        "steps_per_print": 2000,
+        "train_batch_size": "auto",
+        "train_micro_batch_size_per_gpu": "auto",
+        "wall_clock_breakdown": False
+    }
 
     orpo_args = ORPOConfig(
         learning_rate=9e-6,
@@ -103,6 +137,7 @@ def main():
         warmup_steps=10,
         report_to="wandb",
         output_dir="./results",
+        deepspeed=deepspeed_config,  # Add DeepSpeed configuration
     )
 
     trainer = ORPOTrainer(
@@ -115,8 +150,6 @@ def main():
     )
     trainer.train()
     trainer.save_model(new_model)
-
-
 
 if __name__ == "__main__":
     main()
