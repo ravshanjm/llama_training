@@ -129,12 +129,14 @@ def main():
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
             quantization_config=bnb_config,
-            device_map="auto",
-            attn_implementation=attn_implementation
+            torch_dtype=torch_dtype,
+            attn_implementation=attn_implementation,
+            use_cache=False,  # This is important for training with DeepSpeed
         )
-        model, tokenizer = setup_chat_format(model, tokenizer)
         model = prepare_model_for_kbit_training(model)
         model = get_peft_model(model, peft_config)
+
+    model, tokenizer = setup_chat_format(model, tokenizer)
 
     # Load and prepare dataset
     dataset = load_dataset("aisha-org/orpo_dataset_v1")
